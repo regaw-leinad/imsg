@@ -13,13 +13,11 @@ struct CommandRouter {
       ChatsCommand.spec,
       HistoryCommand.spec,
       WatchCommand.spec,
-      SendCommand.spec,
-      ReactCommand.spec,
       RpcCommand.spec,
     ]
     let descriptor = CommandDescriptor(
       name: rootName,
-      abstract: "Send and read iMessage / SMS from the terminal",
+      abstract: "Read iMessage / SMS from the terminal",
       discussion: nil,
       signature: CommandSignature(),
       subcommands: specs.map { $0.descriptor }

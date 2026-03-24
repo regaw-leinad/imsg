@@ -81,41 +81,6 @@ func rpcMessagesHistoryIncludesChatFields() async throws {
 }
 
 @Test
-func rpcSendResolvesChatID() async throws {
-  let store = try CommandTestDatabase.makeStoreForRPC()
-  let output = TestRPCOutput()
-  var captured: MessageSendOptions?
-  let server = RPCServer(
-    store: store,
-    verbose: false,
-    output: output,
-    sendMessage: { options in captured = options }
-  )
-
-  let line = #"{"jsonrpc":"2.0","id":"3","method":"send","params":{"chat_id":1,"text":"yo"}}"#
-  await server.handleLineForTesting(line)
-
-  #expect(captured?.chatIdentifier == "iMessage;+;chat123")
-  #expect(captured?.chatGUID == "iMessage;+;chat123")
-  #expect(captured?.recipient.isEmpty == true)
-  #expect(output.responses.first?["result"] as? [String: Any] != nil)
-}
-
-@Test
-func rpcSendRejectsMissingTextAndFile() async throws {
-  let store = try CommandTestDatabase.makeStoreForRPC()
-  let output = TestRPCOutput()
-  let server = RPCServer(store: store, verbose: false, output: output)
-
-  let line = #"{"jsonrpc":"2.0","id":"4","method":"send","params":{"to":"+15551234567"}}"#
-  await server.handleLineForTesting(line)
-
-  #expect(output.errors.count == 1)
-  let error = output.errors[0]["error"] as? [String: Any]
-  #expect(int64Value(error?["code"]) == -32602)
-}
-
-@Test
 func rpcRejectsInvalidJSON() async throws {
   let store = try CommandTestDatabase.makeStoreForRPC()
   let output = TestRPCOutput()
@@ -185,60 +150,6 @@ func rpcHistoryRequiresChatID() async throws {
   let server = RPCServer(store: store, verbose: false, output: output)
 
   let line = #"{"jsonrpc":"2.0","id":5,"method":"messages.history","params":{"limit":5}}"#
-  await server.handleLineForTesting(line)
-
-  let error = output.errors.first?["error"] as? [String: Any]
-  #expect(int64Value(error?["code"]) == -32602)
-}
-
-@Test
-func rpcSendRejectsInvalidService() async throws {
-  let store = try CommandTestDatabase.makeStoreForRPC()
-  let output = TestRPCOutput()
-  let server = RPCServer(store: store, verbose: false, output: output)
-
-  let line =
-    #"{"jsonrpc":"2.0","id":6,"method":"send","params":{"to":"+15551234567","text":"hi","service":"fax"}}"#
-  await server.handleLineForTesting(line)
-
-  let error = output.errors.first?["error"] as? [String: Any]
-  #expect(int64Value(error?["code"]) == -32602)
-}
-
-@Test
-func rpcSendRejectsMissingRecipientForDirectSend() async throws {
-  let store = try CommandTestDatabase.makeStoreForRPC()
-  let output = TestRPCOutput()
-  let server = RPCServer(store: store, verbose: false, output: output)
-
-  let line = #"{"jsonrpc":"2.0","id":7,"method":"send","params":{"text":"hi"}}"#
-  await server.handleLineForTesting(line)
-
-  let error = output.errors.first?["error"] as? [String: Any]
-  #expect(int64Value(error?["code"]) == -32602)
-}
-
-@Test
-func rpcSendRejectsChatAndRecipient() async throws {
-  let store = try CommandTestDatabase.makeStoreForRPC()
-  let output = TestRPCOutput()
-  let server = RPCServer(store: store, verbose: false, output: output)
-
-  let line =
-    #"{"jsonrpc":"2.0","id":8,"method":"send","params":{"chat_id":1,"to":"+15551234567","text":"hi"}}"#
-  await server.handleLineForTesting(line)
-
-  let error = output.errors.first?["error"] as? [String: Any]
-  #expect(int64Value(error?["code"]) == -32602)
-}
-
-@Test
-func rpcSendRejectsUnknownChatID() async throws {
-  let store = try CommandTestDatabase.makeStoreForRPC()
-  let output = TestRPCOutput()
-  let server = RPCServer(store: store, verbose: false, output: output)
-
-  let line = #"{"jsonrpc":"2.0","id":9,"method":"send","params":{"chat_id":999,"text":"hi"}}"#
   await server.handleLineForTesting(line)
 
   let error = output.errors.first?["error"] as? [String: Any]

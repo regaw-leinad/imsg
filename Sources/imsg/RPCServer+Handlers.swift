@@ -129,55 +129,6 @@ extension RPCServer {
     respond(id: id, result: ["ok": true])
   }
 
-  func handleSend(params: [String: Any], id: Any?) async throws {
-    let text = stringParam(params["text"]) ?? ""
-    let file = stringParam(params["file"]) ?? ""
-    let serviceRaw = stringParam(params["service"]) ?? "auto"
-    guard let service = MessageService(rawValue: serviceRaw) else {
-      throw RPCError.invalidParams("invalid service")
-    }
-    let region = stringParam(params["region"]) ?? "US"
-
-    let input = ChatTargetInput(
-      recipient: stringParam(params["to"]) ?? "",
-      chatID: int64Param(params["chat_id"]),
-      chatIdentifier: stringParam(params["chat_identifier"]) ?? "",
-      chatGUID: stringParam(params["chat_guid"]) ?? ""
-    )
-    try ChatTargetResolver.validateRecipientRequirements(
-      input: input,
-      mixedTargetError: RPCError.invalidParams("use to or chat_*; not both"),
-      missingRecipientError: RPCError.invalidParams("to is required for direct sends")
-    )
-
-    if text.isEmpty && file.isEmpty {
-      throw RPCError.invalidParams("text or file is required")
-    }
-
-    let resolvedTarget = try await ChatTargetResolver.resolveChatTarget(
-      input: input,
-      lookupChat: { chatID in try await cache.info(chatID: chatID) },
-      unknownChatError: { chatID in
-        RPCError.invalidParams("unknown chat_id \(chatID)")
-      }
-    )
-    if input.hasChatTarget && resolvedTarget.preferredIdentifier == nil {
-      throw RPCError.invalidParams("missing chat identifier or guid")
-    }
-
-    try sendMessage(
-      MessageSendOptions(
-        recipient: input.recipient,
-        text: text,
-        attachmentPath: file,
-        service: service,
-        region: region,
-        chatIdentifier: resolvedTarget.chatIdentifier,
-        chatGUID: resolvedTarget.chatGUID
-      )
-    )
-    respond(id: id, result: ["ok": true])
-  }
 }
 
 private func buildMessagePayload(

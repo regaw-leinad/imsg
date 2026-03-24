@@ -14,20 +14,17 @@ final class RPCServer {
   let cache: ChatCache
   let subscriptions = SubscriptionStore()
   let verbose: Bool
-  let sendMessage: (MessageSendOptions) throws -> Void
 
   init(
     store: MessageStore,
     verbose: Bool,
-    output: RPCOutput = RPCWriter(),
-    sendMessage: @escaping (MessageSendOptions) throws -> Void = { try MessageSender().send($0) }
+    output: RPCOutput = RPCWriter()
   ) {
     self.store = store
     self.watcher = MessageWatcher(store: store)
     self.cache = ChatCache(store: store)
     self.verbose = verbose
     self.output = output
-    self.sendMessage = sendMessage
   }
 
   func run() async throws {
@@ -86,8 +83,6 @@ final class RPCServer {
         try await handleWatchSubscribe(id: id, params: params)
       case "watch.unsubscribe":
         try await handleWatchUnsubscribe(id: id, params: params)
-      case "send":
-        try await handleSend(params: params, id: id)
       default:
         output.sendError(id: id, error: RPCError.methodNotFound(method))
       }
