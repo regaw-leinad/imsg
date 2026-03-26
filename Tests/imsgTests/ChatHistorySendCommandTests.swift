@@ -62,6 +62,59 @@ func chatsCommandRunsWithPlainOutput() async throws {
 }
 
 @Test
+func chatsCommandShowsTipWhenContactsUnavailable() async throws {
+  let path = try CommandTestDatabase.makePath()
+  let values = ParsedValues(
+    positional: [],
+    options: ["db": [path], "limit": ["5"]],
+    flags: []
+  )
+  let runtime = RuntimeOptions(parsedValues: values)
+  let resolver = MockContactResolver(contactsUnavailable: true)
+
+  let (output, _) = try await StdoutCapture.capture {
+    try ChatsCommand.run(values: values, runtime: runtime, resolver: resolver)
+  }
+  #expect(output.contains("tip:"))
+  #expect(output.contains("Contacts"))
+  #expect(output.contains("System Settings"))
+}
+
+@Test
+func chatsCommandNoTipWhenContactsAvailable() async throws {
+  let path = try CommandTestDatabase.makePath()
+  let values = ParsedValues(
+    positional: [],
+    options: ["db": [path], "limit": ["5"]],
+    flags: []
+  )
+  let runtime = RuntimeOptions(parsedValues: values)
+  let resolver = MockContactResolver()
+
+  let (output, _) = try await StdoutCapture.capture {
+    try ChatsCommand.run(values: values, runtime: runtime, resolver: resolver)
+  }
+  #expect(!output.contains("tip:"))
+}
+
+@Test
+func chatsCommandNoTipInJsonMode() async throws {
+  let path = try CommandTestDatabase.makePath()
+  let values = ParsedValues(
+    positional: [],
+    options: ["db": [path], "limit": ["5"]],
+    flags: ["jsonOutput"]
+  )
+  let runtime = RuntimeOptions(parsedValues: values)
+  let resolver = MockContactResolver(contactsUnavailable: true)
+
+  let (output, _) = try await StdoutCapture.capture {
+    try ChatsCommand.run(values: values, runtime: runtime, resolver: resolver)
+  }
+  #expect(!output.contains("tip:"))
+}
+
+@Test
 func sendCommandRejectsMissingRecipient() async {
   let values = ParsedValues(
     positional: [],

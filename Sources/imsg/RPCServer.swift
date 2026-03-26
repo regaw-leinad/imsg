@@ -12,6 +12,7 @@ final class RPCServer {
   let watcher: MessageWatcher
   let output: RPCOutput
   let cache: ChatCache
+  let resolver: ContactResolving
   let subscriptions = SubscriptionStore()
   let verbose: Bool
   let sendMessage: (MessageSendOptions) throws -> Void
@@ -25,6 +26,7 @@ final class RPCServer {
     self.store = store
     self.watcher = MessageWatcher(store: store)
     self.cache = ChatCache(store: store)
+    self.resolver = ContactResolver()
     self.verbose = verbose
     self.output = output
     self.sendMessage = sendMessage
@@ -80,6 +82,8 @@ final class RPCServer {
       switch method {
       case "chats.list":
         try await handleChatsList(id: id, params: params)
+      case "participants.list":
+        try await handleParticipantsList(id: id, params: params)
       case "messages.history":
         try await handleMessagesHistory(id: id, params: params)
       case "watch.subscribe":

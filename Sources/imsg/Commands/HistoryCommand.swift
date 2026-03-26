@@ -47,25 +47,70 @@ enum HistoryCommand {
 
     let store = try MessageStore(path: dbPath)
     let filtered = try store.messages(chatID: chatID, limit: limit, filter: filter)
+    let resolver: ContactResolving = ContactResolver()
 
-    if runtime.jsonOutput {
-      for message in filtered {
-        let attachments = try store.attachments(for: message.rowID)
-        let reactions = try store.reactions(for: message.rowID)
-        let payload = MessagePayload(
-          message: message,
-          attachments: attachments,
-          reactions: reactions
-        )
-        try StdoutWriter.writeJSONLine(payload)
+    // Batch resolve all unique senders
+    let uniqueSenders = Array(Set(filtered.map(\.sender)))
+    let resolvedNames = resolver.resolve(uniqueSenders)
+
+    // Print header (CLI only)
+    if !runtime.jsonOutput {
+      let chatInfo = try store.chatInfo(chatID: chatID)
+      let participantHandles = try store.participants(chatID: chatID)
+      let identifier = chatInfo?.identifier ?? ""
+      let guid = chatInfo?.guid ?? ""
+      let dbName = chatInfo?.name ?? ""
+      let service = chatInfo?.service ?? ""
+      let isGroup = isGroupHandle(identifier: identifier, guid: guid)
+      let displayName = resolver.displayNameForChat(
+        identifier: identifier, name: dbName, participants: participantHandles
+      )
+
+      if isGroup {
+        StdoutWriter.writeLine("\(displayName) \u{00B7} \(service)")
+        // Show participant list only if we have a DB name (otherwise displayName IS the participants)
+        if !dbName.isEmpty {
+          let resolved = resolver.resolve(participantHandles)
+          let names = participantHandles.map { resolved[$0] ?? $0 }
+          StdoutWriter.writeLine("  \(names.joined(separator: ", "))")
+        }
+      } else {
+        let resolvedChat = resolver.resolve(identifier)
+        if let resolvedChat, resolvedChat != identifier {
+          StdoutWriter.writeLine("Chat with \(resolvedChat) (\(identifier)) \u{00B7} \(service)")
+        } else {
+          StdoutWriter.writeLine("Chat with \(displayName) \u{00B7} \(service)")
+        }
       }
-      return
+      StdoutWriter.writeLine(String(repeating: "\u{2500}", count: 49))
     }
 
     for message in filtered {
+      let senderName =
+        message.isFromMe
+        ? "You"
+        : (resolvedNames[message.sender] ?? message.sender)
+
+      if runtime.jsonOutput {
+        let attachments = try store.attachments(for: message.rowID)
+        let reactions = try store.reactions(for: message.rowID)
+        // Resolve any reaction senders not already in the batch
+        let reactionNames = resolver.resolve(reactions.map(\.sender))
+        let allResolved = resolvedNames.merging(reactionNames) { existing, _ in existing }
+        let payload = MessagePayload(
+          message: message,
+          attachments: attachments,
+          reactions: reactions,
+          senderDisplayName: resolvedNames[message.sender],
+          resolvedNames: allResolved
+        )
+        try StdoutWriter.writeJSONLine(payload)
+        continue
+      }
+
       let direction = message.isFromMe ? "sent" : "recv"
       let timestamp = CLIISO8601.format(message.date)
-      StdoutWriter.writeLine("\(timestamp) [\(direction)] \(message.sender): \(message.text)")
+      StdoutWriter.writeLine("\(timestamp) [\(direction)] \(senderName): \(message.text)")
       if message.attachmentsCount > 0 {
         if showAttachments {
           let metas = try store.attachments(for: message.rowID)

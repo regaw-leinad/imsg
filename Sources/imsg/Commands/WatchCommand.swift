@@ -82,33 +82,70 @@ enum WatchCommand {
       includeReactions: includeReactions
     )
 
+    let resolver: ContactResolving = ContactResolver()
+    // Cache for group chat display names (only used when watching all chats)
+    var chatDisplayCache: [Int64: (name: String, isGroup: Bool)] = [:]
     let stream = streamProvider(watcher, chatID, sinceRowID, config)
     for try await message in stream {
       if !filter.allows(message) {
         continue
       }
+      let resolvedName = resolver.resolve(message.sender)
+      let senderName = message.isFromMe ? "You" : (resolvedName ?? message.sender)
+
       if runtime.jsonOutput {
         let attachments = try store.attachments(for: message.rowID)
         let reactions = try store.reactions(for: message.rowID)
+        let reactionNames = resolver.resolve(reactions.map(\.sender))
+        var allResolved = reactionNames
+        if let resolvedName { allResolved[message.sender] = resolvedName }
         let payload = MessagePayload(
           message: message,
           attachments: attachments,
-          reactions: reactions
+          reactions: reactions,
+          senderDisplayName: resolvedName,
+          resolvedNames: allResolved
         )
         try StdoutWriter.writeJSONLine(payload)
         continue
       }
+
+      // Resolve group label when watching all chats (no --chat-id)
+      var groupLabel = ""
+      if chatID == nil {
+        let cached =
+          chatDisplayCache[message.chatID]
+          ?? {
+            let info = try? store.chatInfo(chatID: message.chatID)
+            let participants = (try? store.participants(chatID: message.chatID)) ?? []
+            let identifier = info?.identifier ?? ""
+            let guid = info?.guid ?? ""
+            let name = info?.name ?? ""
+            let isGroup = isGroupHandle(identifier: identifier, guid: guid)
+            let displayName = resolver.displayNameForChat(
+              identifier: identifier, name: name, participants: participants
+            )
+            let entry = (name: displayName, isGroup: isGroup)
+            chatDisplayCache[message.chatID] = entry
+            return entry
+          }()
+        if cached.isGroup {
+          groupLabel = " (\(cached.name))"
+        }
+      }
+
       let direction = message.isFromMe ? "sent" : "recv"
       let timestamp = CLIISO8601.format(message.date)
       if message.isReaction, let reactionType = message.reactionType {
         let action = (message.isReactionAdd ?? true) ? "added" : "removed"
         let targetGUID = message.reactedToGUID ?? "unknown"
         StdoutWriter.writeLine(
-          "\(timestamp) [\(direction)] \(message.sender) \(action) \(reactionType.emoji) reaction to \(targetGUID)"
+          "\(timestamp) [\(direction)] \(senderName)\(groupLabel) \(action) \(reactionType.emoji) reaction to \(targetGUID)"
         )
         continue
       }
-      StdoutWriter.writeLine("\(timestamp) [\(direction)] \(message.sender): \(message.text)")
+      StdoutWriter.writeLine(
+        "\(timestamp) [\(direction)] \(senderName)\(groupLabel): \(message.text)")
       if message.attachmentsCount > 0 {
         if showAttachments {
           let metas = try store.attachments(for: message.rowID)

@@ -27,6 +27,10 @@ struct HelpPrinter {
       lines.append("  \(command.name)\t\(command.abstract)")
     }
     lines.append("")
+    lines.append("Permissions:")
+    lines.append("  Full Disk Access    required to read the Messages database")
+    lines.append("  Contacts            optional, resolves phone numbers to names")
+    lines.append("")
     lines.append("Run '\(rootName) <command> --help' for details.")
     return lines
   }
