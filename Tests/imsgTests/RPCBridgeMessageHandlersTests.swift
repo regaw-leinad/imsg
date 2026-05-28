@@ -110,6 +110,7 @@ func rpcSendRichSuppressesQueuedBridgeGuid() async throws {
     store: store,
     verbose: false,
     output: output,
+    resolveSentMessage: { _, _, _, _ in nil },
     invokeBridge: { _, _ in
       ["messageGuid": "previous-guid", "queued": true]
     }
@@ -123,6 +124,45 @@ func rpcSendRichSuppressesQueuedBridgeGuid() async throws {
   #expect(result?["queued"] as? Bool == true)
   #expect(result?["guid"] == nil)
   #expect(result?["message_id"] == nil)
+}
+
+@Test
+func rpcSendRichResolvesQueuedBridgeGuidBeforeResponding() async throws {
+  let store = try CommandTestDatabase.makeStoreForRPC()
+  let output = TestRPCOutput()
+  let server = RPCServer(
+    store: store,
+    verbose: false,
+    output: output,
+    resolveSentMessage: { _, options, chatID, _ in
+      #expect(options.text == "boom")
+      #expect(chatID == 1)
+      return Message(
+        rowID: 42,
+        chatID: 1,
+        sender: "",
+        text: "boom",
+        date: Date(),
+        isFromMe: true,
+        service: "iMessage",
+        handleID: nil,
+        attachmentsCount: 0,
+        guid: "actual-guid"
+      )
+    },
+    invokeBridge: { _, _ in
+      ["messageGuid": "previous-guid", "queued": true]
+    }
+  )
+
+  await server.handleLineForTesting(
+    #"{"jsonrpc":"2.0","id":"rich","method":"send.rich","params":{"chat_id":1,"text":"boom"}}"#
+  )
+
+  let result = output.responses.first?["result"] as? [String: Any]
+  #expect(result?["queued"] as? Bool == true)
+  #expect(result?["guid"] as? String == "actual-guid")
+  #expect(result?["message_id"] as? String == "actual-guid")
 }
 
 @Test

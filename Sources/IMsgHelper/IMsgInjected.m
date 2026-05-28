@@ -969,6 +969,16 @@ static NSAttributedString *buildPlainAttributed(NSString *text, NSInteger partIn
     return [[NSAttributedString alloc] initWithString:text attributes:attrs];
 }
 
+static NSAttributedString *buildPollBreadcrumbAttributed(void) {
+    NSString *placeholder = [NSString stringWithFormat:@"%C", (unichar)0xFFFD];
+    NSDictionary *attrs = @{
+        @"__kIMMessagePartAttributeName": @0,
+        @"__kIMBreadcrumbTextMarkerAttributeName": @"Sent a poll",
+        @"__kIMBreadcrumbTextOptionFlags": @0
+    };
+    return [[NSAttributedString alloc] initWithString:placeholder attributes:attrs];
+}
+
 /// Apply a JSON-shape array of text-formatting ranges to `text`. Each entry is
 /// `{ "start": int, "length": int, "styles": ["bold"|"italic"|"underline"|"strikethrough", ...] }`.
 /// macOS 15+ only — earlier OSes silently degrade to plain text (the private
@@ -1128,6 +1138,57 @@ static void ensureItemBodyData(id item, NSAttributedString *attributedText) {
     }
 }
 
+static void clearReplyMetadataOnObject(id object) {
+    if (!object) return;
+    NSArray<NSString *> *objectSelectors = @[
+        @"setReplyToGUID:",
+        @"setThreadIdentifier:",
+        @"setThreadOriginator:",
+        @"setThreadOriginatorGUID:",
+        @"setThreadOriginatorPart:"
+    ];
+    id nilObject = nil;
+    for (NSString *selectorName in objectSelectors) {
+        SEL selector = NSSelectorFromString(selectorName);
+        if ([object respondsToSelector:selector]) {
+            @try {
+                [object performSelector:selector withObject:nilObject];
+            } @catch (__unused NSException *exception) {}
+        }
+    }
+
+    SEL associatedTypeSelector = @selector(setAssociatedMessageType:);
+    if ([object respondsToSelector:associatedTypeSelector]) {
+        @try {
+            NSMethodSignature *sig =
+                [object methodSignatureForSelector:associatedTypeSelector];
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setSelector:associatedTypeSelector];
+            [inv setTarget:object];
+            long long zero = 0;
+            [inv setArgument:&zero atIndex:2];
+            [inv invoke];
+        } @catch (__unused NSException *exception) {}
+    }
+    SEL associatedGuidSelector = @selector(setAssociatedMessageGUID:);
+    if ([object respondsToSelector:associatedGuidSelector]) {
+        @try {
+            [object performSelector:associatedGuidSelector withObject:nilObject];
+        } @catch (__unused NSException *exception) {}
+    }
+}
+
+static void clearReplyMetadataOnMessage(id message) {
+    clearReplyMetadataOnObject(message);
+    SEL itemSel = NSSelectorFromString(@"_imMessageItem");
+    if ([message respondsToSelector:itemSel]) {
+        @try {
+            id item = [message performSelector:itemSel];
+            clearReplyMetadataOnObject(item);
+        } @catch (__unused NSException *exception) {}
+    }
+}
+
 /// Build an IMMessageItem with the body set up-front, apply any extended
 /// metadata fields onto the item, then wrap with IMMessage. On macOS 26 the
 /// high-level `+initIMMessageWith…` factories build a transient
@@ -1180,6 +1241,7 @@ static id constructIMMessageViaItem(NSAttributedString *attributedText,
     }
     id sender = nil;
     NSDictionary *attributes = nil;
+    NSString *messageThreadIdentifier = threadIdentifier.length ? threadIdentifier : nil;
 
     NSMethodSignature *isig =
         [IMMessageItemClass instanceMethodSignatureForSelector:itemInitSel];
@@ -1194,7 +1256,7 @@ static id constructIMMessageViaItem(NSAttributedString *attributedText,
     [iinv setArgument:&flags atIndex:7];
     [iinv setArgument:&err atIndex:8];
     [iinv setArgument:&guid atIndex:9];
-    [iinv setArgument:&threadIdentifier atIndex:10];
+    [iinv setArgument:&messageThreadIdentifier atIndex:10];
     [iinv retainArguments];
     item = invokeReturningObject(iinv);
     if (!item) return nil;
@@ -1215,6 +1277,13 @@ static id constructIMMessageViaItem(NSAttributedString *attributedText,
     applyItemExtendedFields(item, subject, effectId,
                             associatedMessageGuid, associatedMessageType,
                             associatedMessageRange, summaryInfo);
+    BOOL standalone = !threadIdentifier.length
+        && !threadOriginator
+        && !associatedMessageGuid.length
+        && associatedMessageType == 0;
+    if (standalone) {
+        clearReplyMetadataOnObject(item);
+    }
     if (threadOriginator
         && [item respondsToSelector:@selector(setThreadOriginator:)]) {
         [item performSelector:@selector(setThreadOriginator:)
@@ -1232,7 +1301,11 @@ static id constructIMMessageViaItem(NSAttributedString *attributedText,
     [winv setArgument:&nilSender atIndex:3];
     [winv setArgument:&nilSubject atIndex:4];
     [winv retainArguments];
-    return invokeReturningObject(winv);
+    id result = invokeReturningObject(winv);
+    if (standalone) {
+        clearReplyMetadataOnMessage(result);
+    }
+    return result;
 }
 
 /// Load the parent message for a reply via IMChatHistoryController and derive
@@ -1299,16 +1372,6 @@ static NSString *deriveThreadIdentifier(NSString *parentGuid,
     id parentItem = [parent performSelector:@selector(_imMessageItem)];
     if (outParentItem) *outParentItem = parentItem;
 
-    if ([parent respondsToSelector:@selector(threadIdentifier)]) {
-        NSString *existingIdentifier =
-            [parent performSelector:@selector(threadIdentifier)];
-        if (existingIdentifier.length > 0) {
-            debugLog(@"deriveThreadIdentifier: parent=%@ existing=%@",
-                     parentGuid, existingIdentifier);
-            return existingIdentifier;
-        }
-    }
-
     SEL chatItemsSel = NSSelectorFromString(@"_newChatItems");
     if (!parentItem || ![parentItem respondsToSelector:chatItemsSel]) {
         debugLog(@"deriveThreadIdentifier: parentItem missing _newChatItems");
@@ -1342,6 +1405,16 @@ static NSString *deriveThreadIdentifier(NSString *parentGuid,
     if (!chatItem) {
         debugLog(@"deriveThreadIdentifier: parent has no chat items");
         return nil;
+    }
+
+    if ([parent respondsToSelector:@selector(threadIdentifier)]) {
+        NSString *existingIdentifier =
+            [parent performSelector:@selector(threadIdentifier)];
+        if (existingIdentifier.length > 0) {
+            debugLog(@"deriveThreadIdentifier: parent=%@ existing=%@",
+                     parentGuid, existingIdentifier);
+            return existingIdentifier;
+        }
     }
 
     IMCreateThreadIdentifierForMessagePartChatItemFn fn =
@@ -1407,16 +1480,149 @@ static id loadParentFirstChatItem(NSString *parentGuid, id *outParentMessage) {
         ? ((NSArray *)items).firstObject : items;
 }
 
-/// Dispatch a built IMMessage into the chat. BlueBubblesHelper uses the
-/// public `-[IMChat sendMessage:]` for every send (text, attachment,
-/// reaction, reply) on macOS 11+ — including macOS 26. It Just Works as
-/// long as the IMMessage has been built with a proper init (sender = nil
-/// is fine; IMChat's sendMessage: implementation fills it from the chat's
-/// account). The private `_sendMessage:adjustingSender:shouldQueue:` we
-/// were preferring earlier is unnecessary and may silently drop items in
-/// some macOS 26 states.
-static void dispatchIMMessageInChat(IMChat *chat, id message) {
+/// Dispatch a built IMMessage into the chat after installing the same
+/// thread context Messages.app keeps for inline replies. The private
+/// `_sendMessage:adjustingSender:shouldQueue:` path we tried earlier may
+/// silently drop items in some macOS 26 states, so use the chat registry
+/// dispatch when available and fall back to `-[IMChat sendMessage:]`.
+static void prepareThreadContextForSend(IMChat *chat,
+                                        NSString *threadIdentifier,
+                                        id threadOriginator) {
+    if (!chat) return;
+    if ([chat respondsToSelector:@selector(inlineReplyController)]) {
+        id controller = [chat performSelector:@selector(inlineReplyController)];
+        if ([controller respondsToSelector:@selector(setThreadIdentifier:)]) {
+            [controller performSelector:@selector(setThreadIdentifier:)
+                             withObject:(threadIdentifier.length ? threadIdentifier : nil)];
+        }
+        if ([controller respondsToSelector:@selector(setThreadOriginator:)]) {
+            [controller performSelector:@selector(setThreadOriginator:)
+                             withObject:threadOriginator];
+        }
+    }
+
+    NSString *chatGUID = [chat respondsToSelector:@selector(guid)]
+        ? [chat performSelector:@selector(guid)] : nil;
+    if (!chatGUID.length) return;
+
+    id registry = nil;
+    if ([chat respondsToSelector:@selector(chatRegistry)]) {
+        registry = [chat performSelector:@selector(chatRegistry)];
+    }
+    if (!registry) {
+        Class registryClass = NSClassFromString(@"IMChatRegistry");
+        if (registryClass && [registryClass respondsToSelector:@selector(sharedInstance)]) {
+            registry = [registryClass performSelector:@selector(sharedInstance)];
+        }
+    }
+    if (!registry
+        || ![registry respondsToSelector:@selector(chatGUIDToCurrentThreadMap)]) {
+        return;
+    }
+
+    id map = [registry performSelector:@selector(chatGUIDToCurrentThreadMap)];
+    if (![map isKindOfClass:[NSMutableDictionary class]]) return;
+    if (threadIdentifier.length) {
+        [(NSMutableDictionary *)map setObject:threadIdentifier forKey:chatGUID];
+    } else {
+        [(NSMutableDictionary *)map removeObjectForKey:chatGUID];
+    }
+}
+
+static void clearThreadContextForChat(IMChat *chat, NSString *expectedThreadIdentifier) {
+    if (!chat) return;
+    if ([chat respondsToSelector:@selector(inlineReplyController)]) {
+        id controller = [chat performSelector:@selector(inlineReplyController)];
+        BOOL shouldClearController = YES;
+        if (expectedThreadIdentifier.length
+            && [controller respondsToSelector:@selector(threadIdentifier)]) {
+            NSString *current =
+                [controller performSelector:@selector(threadIdentifier)];
+            shouldClearController =
+                !current.length || [current isEqualToString:expectedThreadIdentifier];
+        }
+        if (shouldClearController) {
+            if ([controller respondsToSelector:@selector(setThreadIdentifier:)]) {
+                [controller performSelector:@selector(setThreadIdentifier:)
+                                 withObject:nil];
+            }
+            if ([controller respondsToSelector:@selector(setThreadOriginator:)]) {
+                [controller performSelector:@selector(setThreadOriginator:)
+                                 withObject:nil];
+            }
+        }
+    }
+
+    NSString *chatGUID = [chat respondsToSelector:@selector(guid)]
+        ? [chat performSelector:@selector(guid)] : nil;
+    if (!chatGUID.length) return;
+
+    id registry = nil;
+    if ([chat respondsToSelector:@selector(chatRegistry)]) {
+        registry = [chat performSelector:@selector(chatRegistry)];
+    }
+    if (!registry) {
+        Class registryClass = NSClassFromString(@"IMChatRegistry");
+        if (registryClass && [registryClass respondsToSelector:@selector(sharedInstance)]) {
+            registry = [registryClass performSelector:@selector(sharedInstance)];
+        }
+    }
+    if (!registry
+        || ![registry respondsToSelector:@selector(chatGUIDToCurrentThreadMap)]) {
+        return;
+    }
+
+    id map = [registry performSelector:@selector(chatGUIDToCurrentThreadMap)];
+    if (![map isKindOfClass:[NSMutableDictionary class]]) return;
+    NSString *current = [(NSMutableDictionary *)map objectForKey:chatGUID];
+    if (!expectedThreadIdentifier.length
+        || !current.length
+        || [current isEqualToString:expectedThreadIdentifier]) {
+        [(NSMutableDictionary *)map removeObjectForKey:chatGUID];
+    }
+}
+
+static void scheduleThreadContextClear(IMChat *chat, NSString *threadIdentifier) {
+    if (!chat) return;
+    NSString *expected = threadIdentifier ?: @"";
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+                   dispatch_get_main_queue(), ^{
+        clearThreadContextForChat(chat, expected);
+    });
+}
+
+static void dispatchIMMessageInChat(IMChat *chat,
+                                    id message,
+                                    NSString *threadIdentifier,
+                                    id threadOriginator) {
+    if (!threadIdentifier.length) {
+        clearThreadContextForChat(chat, nil);
+        clearReplyMetadataOnMessage(message);
+        [chat performSelector:@selector(sendMessage:) withObject:message];
+        return;
+    }
+
+    prepareThreadContextForSend(chat, threadIdentifier, threadOriginator);
+    id registry = nil;
+    if ([chat respondsToSelector:@selector(chatRegistry)]) {
+        registry = [chat performSelector:@selector(chatRegistry)];
+    }
+    SEL registrySendSel = NSSelectorFromString(@"_chat:sendMessage:");
+    if (registry && [registry respondsToSelector:registrySendSel]) {
+        NSMethodSignature *sig = [registry methodSignatureForSelector:registrySendSel];
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        [inv setSelector:registrySendSel];
+        [inv setTarget:registry];
+        __unsafe_unretained id chatArg = chat;
+        __unsafe_unretained id messageArg = message;
+        [inv setArgument:&chatArg atIndex:2];
+        [inv setArgument:&messageArg atIndex:3];
+        [inv invoke];
+        scheduleThreadContextClear(chat, threadIdentifier);
+        return;
+    }
     [chat performSelector:@selector(sendMessage:) withObject:message];
+    scheduleThreadContextClear(chat, threadIdentifier);
 }
 
 static unsigned long long flagsForMessagePayload(NSAttributedString *subject,
@@ -1540,6 +1746,19 @@ static NSData *archivePollLiveLayoutInfo(NSError **outError) {
     #pragma clang diagnostic pop
 }
 
+static NSData *archivePollRequiredCapabilities(NSError **outError) {
+    NSArray *capabilities = @[@"supports-polls"];
+    if (@available(macOS 10.13, *)) {
+        return [NSKeyedArchiver archivedDataWithRootObject:capabilities
+                                     requiringSecureCoding:NO
+                                                     error:outError];
+    }
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return [NSKeyedArchiver archivedDataWithRootObject:capabilities];
+    #pragma clang diagnostic pop
+}
+
 static NSData *archivePollPayloadEnvelope(NSURL *url,
                                           NSUUID *sessionIdentifier,
                                           NSError **outError) {
@@ -1562,6 +1781,13 @@ static NSData *archivePollPayloadEnvelope(NSURL *url,
         return nil;
     }
 
+    NSError *capabilitiesError = nil;
+    NSData *requiredCapabilities = archivePollRequiredCapabilities(&capabilitiesError);
+    if (!requiredCapabilities.length) {
+        if (outError) *outError = capabilitiesError;
+        return nil;
+    }
+
     NSString *previewText = @"Sent a poll";
     NSDictionary *userInfo = @{
         @"caption": previewText,
@@ -1579,6 +1805,8 @@ static NSData *archivePollPayloadEnvelope(NSURL *url,
         @"ai": previewImage,
         @"sessionIdentifier": sessionIdentifier,
         @"liveLayoutInfo": liveLayoutInfo,
+        @"requiredCapabilities": requiredCapabilities,
+        @"sendAsText": @YES,
         @"an": @"Polls"
     };
     if (@available(macOS 10.13, *)) {
@@ -1671,6 +1899,8 @@ static id buildPollIMMessage(NSAttributedString *body,
                              NSDictionary *summaryInfo,
                              NSString *threadIdentifier,
                              NSString *replyToGUID,
+                             NSString *threadOriginatorGUID,
+                             NSString *threadOriginatorPart,
                              id parentItem) {
     Class messageClass = NSClassFromString(@"IMMessage");
     if (!messageClass) return nil;
@@ -1755,6 +1985,18 @@ static id buildPollIMMessage(NSAttributedString *body,
             [item performSelector:@selector(setThreadOriginator:)
                        withObject:parentItem];
         }
+        if (threadOriginatorGUID.length) {
+            SEL sel = NSSelectorFromString(@"setThreadOriginatorGUID:");
+            if ([item respondsToSelector:sel]) {
+                [item performSelector:sel withObject:threadOriginatorGUID];
+            }
+        }
+        if (threadOriginatorPart.length) {
+            SEL sel = NSSelectorFromString(@"setThreadOriginatorPart:");
+            if ([item respondsToSelector:sel]) {
+                [item performSelector:sel withObject:threadOriginatorPart];
+            }
+        }
 
         NSMethodSignature *wsig = [messageClass methodSignatureForSelector:wrapSel];
         NSInvocation *winv = [NSInvocation invocationWithMethodSignature:wsig];
@@ -1804,7 +2046,56 @@ static id buildPollIMMessage(NSAttributedString *body,
     [inv setArgument:&scheduleState atIndex:16];
     [inv setArgument:&summaryInfo atIndex:17];
     [inv retainArguments];
-    return invokeReturningObject(inv);
+    id result = invokeReturningObject(inv);
+    if (!messageThreadIdentifier.length) {
+        clearReplyMetadataOnMessage(result);
+    }
+    return result;
+}
+
+static NSString *threadOriginatorPartForChatItem(id parentItem) {
+    if (!parentItem
+        || ![parentItem respondsToSelector:@selector(messagePartRange)]) {
+        return nil;
+    }
+    NSRange range = [(IMMessagePartChatItem *)parentItem messagePartRange];
+    if (range.length == 0) return nil;
+
+    NSInteger partIndex = 0;
+    SEL indexSel = @selector(index);
+    if ([parentItem respondsToSelector:indexSel]) {
+        NSMethodSignature *sig = [parentItem methodSignatureForSelector:indexSel];
+        if (sig && strcmp(sig.methodReturnType, @encode(NSInteger)) == 0) {
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setSelector:indexSel];
+            [inv setTarget:parentItem];
+            [inv invoke];
+            [inv getReturnValue:&partIndex];
+        }
+    }
+
+    return [NSString stringWithFormat:@"%ld:%lu:%lu",
+                                      (long)partIndex,
+                                      (unsigned long)range.location,
+                                      (unsigned long)range.length];
+}
+
+static void applyThreadOriginatorGUIDHints(id object,
+                                           NSString *threadOriginatorGUID,
+                                           NSString *threadOriginatorPart) {
+    if (!object) return;
+    if (threadOriginatorGUID.length) {
+        SEL sel = NSSelectorFromString(@"setThreadOriginatorGUID:");
+        if ([object respondsToSelector:sel]) {
+            [object performSelector:sel withObject:threadOriginatorGUID];
+        }
+    }
+    if (threadOriginatorPart.length) {
+        SEL sel = NSSelectorFromString(@"setThreadOriginatorPart:");
+        if ([object respondsToSelector:sel]) {
+            [object performSelector:sel withObject:threadOriginatorPart];
+        }
+    }
 }
 
 static unsigned long long flagsForMessagePayload(NSAttributedString *subject,
@@ -2003,6 +2294,9 @@ static id buildIMMessage(NSAttributedString *body,
                 [result performSelector:@selector(setThreadIdentifier:)
                              withObject:threadIdentifier];
             }
+            if (!threadIdentifier.length) {
+                clearReplyMetadataOnMessage(result);
+            }
             return result;
         }
     }
@@ -2033,6 +2327,9 @@ static id buildIMMessage(NSAttributedString *body,
         [inv invoke];
         __unsafe_unretained id result = nil;
         [inv getReturnValue:&result];
+        if (!threadIdentifier.length) {
+            clearReplyMetadataOnMessage(result);
+        }
         return result;
     }
 
@@ -2049,6 +2346,9 @@ static id buildIMMessage(NSAttributedString *body,
         [inv invoke];
         __unsafe_unretained id result = nil;
         [inv getReturnValue:&result];
+        if (!threadIdentifier.length) {
+            clearReplyMetadataOnMessage(result);
+        }
         return result;
     }
     return nil;
@@ -2231,14 +2531,10 @@ static NSDictionary *handleSendMessage(NSInteger requestId, NSDictionary *params
         : nil;
 
     NSRange zeroRange = NSMakeRange(0, body.length);
-    long long associatedType = selectedMessageGuid.length ? 100 : 0;
 
     // Reply targets need a derived thread identifier on macOS 26 to render
-    // as a threaded in-line reply rather than a standalone message — the
-    // associated_message_guid alone isn't enough on the receiver. Best-effort:
-    // if we can't derive (parent not loadable, IMCore symbol missing) we
-    // still send with the associated fields and let the receiver render
-    // a quoted reply.
+    // as a threaded in-line reply rather than a standalone message.
+    // Best-effort: if we can't derive the parent, send as a normal message.
     id parentMessage = nil;
     id parentItem = nil;
     NSString *threadIdentifier = nil;
@@ -2248,6 +2544,8 @@ static NSDictionary *handleSendMessage(NSInteger requestId, NSDictionary *params
                                                   &parentItem);
         debugLog(@"handleSendMessage: parent=%@ threadId=%@",
                  selectedMessageGuid, threadIdentifier ?: @"(none)");
+    } else {
+        clearThreadContextForChat(chat, nil);
     }
 
     @try {
@@ -2255,8 +2553,8 @@ static NSDictionary *handleSendMessage(NSInteger requestId, NSDictionary *params
                                       effectId,
                                       threadIdentifier,
                                       parentItem,
-                                      selectedMessageGuid,
-                                      associatedType,
+                                      nil,
+                                      0,
                                       zeroRange,
                                       /*summaryInfo*/ nil,
                                       /*fileTransferGuids*/ @[],
@@ -2297,7 +2595,7 @@ static NSDictionary *handleSendMessage(NSInteger requestId, NSDictionary *params
                 [inv invoke];
             });
         } else {
-            dispatchIMMessageInChat(chat, imMessage);
+            dispatchIMMessageInChat(chat, imMessage, threadIdentifier, parentItem);
         }
 
         // Best-effort messageGuid; not always available immediately.
@@ -2357,7 +2655,8 @@ static NSDictionary *handleSendPoll(NSInteger requestId, NSDictionary *params) {
     NSString *sessionIdentifier = nil;
     NSArray<NSString *> *optionIdentifiers = nil;
     NSString *payloadError = nil;
-    NSData *payloadData = buildPollCreationPayloadData(question,
+    NSString *payloadQuestion = selectedMessageGuid.length ? @"" : question;
+    NSData *payloadData = buildPollCreationPayloadData(payloadQuestion,
                                                        options,
                                                        creatorHandle,
                                                        &sessionIdentifier,
@@ -2367,16 +2666,21 @@ static NSDictionary *handleSendPoll(NSInteger requestId, NSDictionary *params) {
         return errorResponse(requestId, payloadError ?: @"Could not build poll payload");
     }
 
-    NSDictionary *summary = @{ @"amc": @0, @"ust": @YES };
-    NSString *pollPlaceholder = [NSString stringWithFormat:@"%C", (unichar)0xFFFD];
-    NSAttributedString *body = buildPlainAttributed(pollPlaceholder, 0);
+    NSDictionary *summary = @{ @"enc": @YES, @"ust": @YES };
+    NSAttributedString *body = buildPollBreadcrumbAttributed();
     id parentMessage = nil;
     id parentItem = nil;
+    id parentChatItem = nil;
     NSString *threadIdentifier = nil;
+    NSString *threadOriginatorPart = nil;
+    NSString *replyToGUID = selectedMessageGuid;
+    NSString *threadOriginatorGUID = selectedMessageGuid;
     if (selectedMessageGuid.length) {
         threadIdentifier = deriveThreadIdentifier(selectedMessageGuid,
                                                   &parentMessage,
                                                   &parentItem);
+        parentChatItem = loadParentFirstChatItem(selectedMessageGuid, NULL);
+        threadOriginatorPart = threadOriginatorPartForChatItem(parentChatItem ?: parentItem);
         debugLog(@"handleSendPoll: parent=%@ threadId=%@",
                  selectedMessageGuid, threadIdentifier ?: @"(none)");
         if (!threadIdentifier.length || !parentMessage || !parentItem) {
@@ -2384,6 +2688,8 @@ static NSDictionary *handleSendPoll(NSInteger requestId, NSDictionary *params) {
                 [NSString stringWithFormat:
                     @"Could not resolve reply target for poll: %@", selectedMessageGuid]);
         }
+    } else {
+        clearThreadContextForChat(chat, nil);
     }
 
     @try {
@@ -2391,7 +2697,9 @@ static NSDictionary *handleSendPoll(NSInteger requestId, NSDictionary *params) {
                                           payloadData,
                                           summary,
                                           threadIdentifier,
-                                          selectedMessageGuid,
+                                          replyToGUID,
+                                          threadOriginatorGUID,
+                                          threadOriginatorPart,
                                           parentItem);
         if (!imMessage) {
             return errorResponse(requestId, @"Could not construct poll IMMessage");
@@ -2406,7 +2714,10 @@ static NSDictionary *handleSendPoll(NSInteger requestId, NSDictionary *params) {
             [imMessage performSelector:@selector(setThreadIdentifier:)
                             withObject:threadIdentifier];
         }
-        dispatchIMMessageInChat(chat, imMessage);
+        applyThreadOriginatorGUIDHints(imMessage,
+                                       selectedMessageGuid,
+                                       threadOriginatorPart);
+        dispatchIMMessageInChat(chat, imMessage, threadIdentifier, parentItem);
         NSString *guid = lastSentMessageGuid(chat);
 
         NSMutableArray *optionPayloads = [NSMutableArray array];
@@ -2479,7 +2790,6 @@ static NSDictionary *handleSendMultipart(NSInteger requestId, NSDictionary *para
         : nil;
 
     @try {
-        long long associatedType = selectedMessageGuid.length ? 100 : 0;
         id parentMessage = nil;
         id parentItem = nil;
         NSString *threadIdentifier = nil;
@@ -2489,10 +2799,12 @@ static NSDictionary *handleSendMultipart(NSInteger requestId, NSDictionary *para
                                                       &parentItem);
             debugLog(@"handleSendMultipart: parent=%@ threadId=%@",
                      selectedMessageGuid, threadIdentifier ?: @"(none)");
+        } else {
+            clearThreadContextForChat(chat, nil);
         }
         id imMessage = buildIMMessage(body, subjectAttr, effectId, threadIdentifier,
                                       parentItem,
-                                      selectedMessageGuid, associatedType,
+                                      nil, 0,
                                       NSMakeRange(0, body.length),
                                       nil, @[], NO, NO);
         if (!imMessage) {
@@ -2508,7 +2820,7 @@ static NSDictionary *handleSendMultipart(NSInteger requestId, NSDictionary *para
             [imMessage performSelector:@selector(setThreadIdentifier:)
                             withObject:threadIdentifier];
         }
-        dispatchIMMessageInChat(chat, imMessage);
+        dispatchIMMessageInChat(chat, imMessage, threadIdentifier, parentItem);
         NSString *guid = lastSentMessageGuid(chat);
         return successResponse(requestId, @{
             @"chatGuid": chatGuid,
@@ -2785,7 +3097,6 @@ static NSDictionary *handleSendAttachment(NSInteger requestId, NSDictionary *par
         NSAttributedString *subjectAttr = subject.length
             ? buildPlainAttributed(subject, 0)
             : nil;
-        long long associatedType = selectedMessageGuid.length ? 100 : 0;
         id parentMessage = nil;
         id parentItem = nil;
         NSString *threadIdentifier = nil;
@@ -2795,11 +3106,13 @@ static NSDictionary *handleSendAttachment(NSInteger requestId, NSDictionary *par
                                                       &parentItem);
             debugLog(@"handleSendAttachment: parent=%@ threadId=%@",
                      selectedMessageGuid, threadIdentifier ?: @"(none)");
+        } else {
+            clearThreadContextForChat(chat, nil);
         }
 
         id imMessage = buildIMMessage(body, subjectAttr, effectId, threadIdentifier,
                                       parentItem,
-                                      selectedMessageGuid, associatedType,
+                                      nil, 0,
                                       NSMakeRange(0, body.length), nil,
                                       @[transferGuid], isAudio, NO);
         if (!imMessage) {
@@ -2815,7 +3128,7 @@ static NSDictionary *handleSendAttachment(NSInteger requestId, NSDictionary *par
             [imMessage performSelector:@selector(setThreadIdentifier:)
                             withObject:threadIdentifier];
         }
-        dispatchIMMessageInChat(chat, imMessage);
+        dispatchIMMessageInChat(chat, imMessage, threadIdentifier, parentItem);
         NSString *guid = lastSentMessageGuid(chat);
         return successResponse(requestId, @{
             @"chatGuid": chatGuid,
@@ -3568,7 +3881,7 @@ static NSDictionary *handleCreateChat(NSInteger requestId, NSDictionary *params)
                                           NSMakeRange(0, body.length),
                                           nil, @[], NO, NO);
             if (imMessage) {
-                dispatchIMMessageInChat(chat, imMessage);
+                dispatchIMMessageInChat(chat, imMessage, nil, nil);
                 messageGuid = lastSentMessageGuid(chat);
             }
         } @catch (__unused NSException *ex) {}

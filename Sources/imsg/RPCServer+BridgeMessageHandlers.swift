@@ -28,12 +28,29 @@ extension RPCServer {
       bridgeParams["textFormatting"] = formatting
     }
 
+    let sentAt = Date()
     let data = try await invokeBridge(action: .sendMessage, params: bridgeParams)
     var result: [String: Any] = ["ok": true]
     if let queued = data["queued"] as? Bool {
       result["queued"] = queued
     }
-    if data["queued"] as? Bool != true,
+    let chatID =
+      int64Param(params["chat_id"])
+      ?? (try? store.chatInfo(matchingTarget: chatGUID)?.id)
+    let options = MessageSendOptions(
+      recipient: "",
+      text: text,
+      service: .auto,
+      chatGUID: chatGUID
+    )
+    if data["queued"] as? Bool == true,
+      !text.isEmpty,
+      let sentMessage = try? await resolveSentMessage(store, options, chatID, sentAt),
+      !sentMessage.guid.isEmpty
+    {
+      result["guid"] = sentMessage.guid
+      result["message_id"] = sentMessage.guid
+    } else if data["queued"] as? Bool != true,
       let guid = data["messageGuid"] as? String, !guid.isEmpty
     {
       result["guid"] = guid

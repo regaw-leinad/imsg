@@ -57,12 +57,18 @@ extension MessageStore {
     return try withConnection { db in
       var messages: [Message] = []
       var parentCache: ReplyParentCache = [:]
+      var pollOptionCache = PollOptionTextCache()
       let rows = try db.prepareRowIterator(query.sql, bindings: query.bindings)
       while let row = try rows.failableNext() {
         let decoded = try decodeMessageRow(
           row,
           columns: query.selection.columns,
           fallbackChatID: query.fallbackChatID
+        )
+        let poll = try enrichedPollEvent(
+          decoded.poll,
+          db: db,
+          cache: &pollOptionCache
         )
         let replyToGUID = routedReplyToGUID(decoded)
         let threadOriginatorGUID =
@@ -96,7 +102,7 @@ extension MessageStore {
               replyToText: parent?.text,
               replyToSender: parent?.sender
             ),
-            poll: decoded.poll
+            poll: poll
           ))
       }
       return messages

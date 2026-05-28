@@ -102,16 +102,26 @@ func injectedHelperWiresNativePollSend() throws {
   #expect(source.contains("MSMessageLiveLayout"))
   #expect(source.contains(#""liveLayoutInfo""#))
   #expect(source.contains(#""ai""#))
+  #expect(source.contains(#""sendAsText": @YES"#))
+  #expect(source.contains(#""supports-polls""#))
+  #expect(source.contains("__kIMBreadcrumbTextMarkerAttributeName"))
   #expect(source.contains("pollPreviewImageData"))
   #expect(sendPollBody.contains("buildPollCreationPayloadData"))
   #expect(sendPollBody.contains("buildPollIMMessage"))
+  #expect(sendPollBody.contains(#"selectedMessageGuid.length ? @"" : question"#))
+  #expect(sendPollBody.contains(#"@{ @"enc": @YES, @"ust": @YES }"#))
   #expect(sendPollBody.contains("selectedMessageGuid"))
   #expect(sendPollBody.contains("deriveThreadIdentifier"))
   #expect(sendPollBody.contains("setThreadOriginator:"))
   #expect(sendPollBody.contains("parentMessage"))
   #expect(sendPollBody.contains("parentItem"))
   #expect(sendPollBody.contains("threadIdentifier"))
-  #expect(sendPollBody.contains("dispatchIMMessageInChat(chat, imMessage)"))
+  #expect(!source.contains("threadStrategy"))
+  #expect(!source.contains("debug-runtime-search"))
+  #expect(
+    sendPollBody.contains(
+      "dispatchIMMessageInChat(chat, imMessage, threadIdentifier, parentItem)"
+    ))
   #expect(
     source.contains(
       "initWithSender:time:text:messageSubject:fileTransferGUIDs:flags:error:guid:subject:balloonBundleID:payloadData:expressiveSendStyleID:threadIdentifier:scheduleType:scheduleState:messageSummaryInfo:"

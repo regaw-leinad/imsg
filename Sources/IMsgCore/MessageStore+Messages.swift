@@ -75,6 +75,11 @@ struct DecodedMessageRow {
   let poll: MessagePollEvent?
 }
 
+struct PollOptionTextCache {
+  var optionsByPollGUID: [String: [String: String]] = [:]
+  var missingPollGUIDs = Set<String>()
+}
+
 struct MessageRowSelection {
   let selectList: String
   let columns: MessageRowColumns
@@ -167,12 +172,18 @@ extension MessageStore {
     return try withConnection { db in
       var messages: [Message] = []
       var parentCache: ReplyParentCache = [:]
+      var pollOptionCache = PollOptionTextCache()
       let rows = try db.prepareRowIterator(query.sql, bindings: query.bindings)
       while let row = try rows.failableNext() {
         let decoded = try decodeMessageRow(
           row,
           columns: query.selection.columns,
           fallbackChatID: query.fallbackChatID
+        )
+        let poll = try enrichedPollEvent(
+          decoded.poll,
+          db: db,
+          cache: &pollOptionCache
         )
         let replyToGUID = routedReplyToGUID(decoded)
         let threadOriginatorGUID =
@@ -206,7 +217,7 @@ extension MessageStore {
               replyToText: parent?.text,
               replyToSender: parent?.sender
             ),
-            poll: decoded.poll
+            poll: poll
           ))
       }
       return messages
@@ -239,6 +250,7 @@ extension MessageStore {
     return try withConnection { db in
       var messages: [Message] = []
       var parentCache: ReplyParentCache = [:]
+      var pollOptionCache = PollOptionTextCache()
       let urlBalloonProvider = "com.apple.messages.URLBalloonProvider"
 
       let rows = try db.prepareRowIterator(query.sql, bindings: query.bindings)
@@ -247,6 +259,11 @@ extension MessageStore {
           row,
           columns: query.selection.columns,
           fallbackChatID: query.fallbackChatID
+        )
+        let poll = try enrichedPollEvent(
+          decoded.poll,
+          db: db,
+          cache: &pollOptionCache
         )
         let balloonBundleID = try stringValue(row, MessageRowColumns.balloonBundleID)
         if balloonBundleID == urlBalloonProvider,
@@ -311,7 +328,7 @@ extension MessageStore {
               isReactionAdd: reaction.isReactionAdd,
               reactedToGUID: reaction.reactedToGUID
             ),
-            poll: decoded.poll
+            poll: poll
           ))
       }
       return messages
@@ -332,6 +349,7 @@ extension MessageStore {
 
     return try withConnection { db in
       let rows = try db.prepareRowIterator(query.sql, bindings: query.bindings)
+      var pollOptionCache = PollOptionTextCache()
       while let row = try rows.failableNext() {
         let decoded = try decodeMessageRow(
           row,
@@ -339,6 +357,12 @@ extension MessageStore {
           fallbackChatID: query.fallbackChatID
         )
         guard decoded.text == text else { continue }
+        let poll = try enrichedPollEvent(
+          decoded.poll,
+          db: db,
+          cache: &pollOptionCache
+        )
+
         let replyToGUID = routedReplyToGUID(decoded)
         let threadOriginatorGUID =
           decoded.threadOriginatorGUID.isEmpty ? nil : decoded.threadOriginatorGUID
@@ -371,7 +395,7 @@ extension MessageStore {
             replyToText: parent?.text,
             replyToSender: parent?.sender
           ),
-          poll: decoded.poll
+          poll: poll
         )
       }
       return nil
@@ -411,6 +435,71 @@ extension MessageStore {
       guard let row = try rows.failableNext() else { return nil }
       return try decodeMessageSendStatus(row)
     }
+  }
+
+  func enrichedPollEvent(
+    _ poll: MessagePollEvent?,
+    db: Connection,
+    cache: inout PollOptionTextCache
+  ) throws -> MessagePollEvent? {
+    guard let poll, poll.kind == .vote else { return poll }
+    let candidateGUIDs = [poll.originalGUID, poll.pollGUID]
+      .compactMap { value -> String? in
+        guard let value else { return nil }
+        let normalized = normalizeAssociatedGUID(value)
+        return normalized.isEmpty ? nil : normalized
+      }
+    guard let pollGUID = candidateGUIDs.first else { return poll }
+
+    let optionTexts = try pollOptionTextsByID(
+      pollGUID: pollGUID,
+      db: db,
+      cache: &cache
+    )
+    return poll.resolvingVoteOptionTexts(optionTexts)
+  }
+
+  private func pollOptionTextsByID(
+    pollGUID: String,
+    db: Connection,
+    cache: inout PollOptionTextCache
+  ) throws -> [String: String] {
+    if let cached = cache.optionsByPollGUID[pollGUID] {
+      return cached
+    }
+    if cache.missingPollGUIDs.contains(pollGUID) {
+      return [:]
+    }
+
+    let selection = MessageRowSelection(store: self, includeChatID: false)
+    let sql = """
+      SELECT \(selection.selectList)
+      FROM message m
+      LEFT JOIN handle h ON m.handle_id = h.ROWID
+      WHERE m.guid = ?
+      LIMIT 1
+      """
+    let rows = try db.prepareRowIterator(sql, bindings: [pollGUID])
+    guard let row = try rows.failableNext() else {
+      cache.missingPollGUIDs.insert(pollGUID)
+      return [:]
+    }
+    let decoded = try decodeMessageRow(
+      row,
+      columns: selection.columns,
+      fallbackChatID: nil
+    )
+    guard let options = decoded.poll?.options, !options.isEmpty else {
+      cache.missingPollGUIDs.insert(pollGUID)
+      return [:]
+    }
+
+    var optionTexts: [String: String] = [:]
+    for option in options where optionTexts[option.id] == nil {
+      optionTexts[option.id] = option.text
+    }
+    cache.optionsByPollGUID[pollGUID] = optionTexts
+    return optionTexts
   }
 
   func decodeMessageRow(

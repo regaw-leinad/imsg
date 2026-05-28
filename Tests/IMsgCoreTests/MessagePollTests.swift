@@ -122,6 +122,40 @@ func decodesPollCreationUsesSenderAsCreatorFallback() throws {
 }
 
 @Test
+func decodesPollOptionUpdateWithOriginalPollReference() throws {
+  let update: [String: Any] = [
+    "orderedPollOptions": [
+      ["optionIdentifier": "choice-a", "pollOptionText": "Pizza"],
+      ["optionIdentifier": "choice-b", "pollOptionText": "Sushi"],
+      ["optionIdentifier": "choice-c", "pollOptionText": "Tacos"],
+    ]
+  ]
+  let payload = try applePollEnvelopePayload(jsonObject: update)
+
+  let poll = MessagePollDecoder.decode(
+    balloonBundleID: testPollBundleID,
+    payloadData: payload,
+    messageSummaryInfo: Data(),
+    associatedMessageType: 2,
+    associatedMessageGUID: "p/original-poll-guid",
+    messageGUID: "updated-poll-guid",
+    sender: "+15550002000"
+  )
+
+  #expect(poll?.kind == .created)
+  #expect(poll?.event == "imessage.poll.created")
+  #expect(poll?.pollGUID == "updated-poll-guid")
+  #expect(poll?.originalGUID == "original-poll-guid")
+  #expect(poll?.metadata?.associatedMessageType == 2)
+  #expect(
+    poll?.options == [
+      MessagePollOption(id: "choice-a", text: "Pizza"),
+      MessagePollOption(id: "choice-b", text: "Sushi"),
+      MessagePollOption(id: "choice-c", text: "Tacos"),
+    ])
+}
+
+@Test
 func decodesPollVotePayloadFromBinaryPlistURL() throws {
   let response: [String: Any] = [
     "votes": [
@@ -380,7 +414,18 @@ func messageStoreDecodesPollVoteRowsWithPayloadGate() throws {
     VALUES (1, '+15550001000', 'iMessage;+;chat-test', 'Poll Test', 'iMessage')
     """
   )
-  try db.run("INSERT INTO handle(ROWID, id) VALUES (1, '+15550002000')")
+  try db.run(
+    "INSERT INTO handle(ROWID, id) VALUES (1, '+15550002000'), (2, '+15550001000')")
+
+  let definition: [String: Any] = [
+    "title": "Pick one",
+    "orderedPollOptions": [
+      ["optionIdentifier": "choice-a", "pollOptionText": "A"],
+      ["optionIdentifier": "choice-b", "pollOptionText": "B"],
+    ],
+  ]
+  let pollPayload = try applePollEnvelopePayload(jsonObject: definition)
+  let pollBlob = Blob(bytes: [UInt8](pollPayload))
 
   let response: [String: Any] = [
     "votes": [
@@ -397,12 +442,25 @@ func messageStoreDecodesPollVoteRowsWithPayloadGate() throws {
       ROWID, handle_id, text, guid, associated_message_guid, associated_message_type,
       balloon_bundle_id, payload_data, message_summary_info, date, is_from_me, service
     )
-    VALUES (1, 1, '', 'vote-row-guid', 'p/original-poll-guid', 4000, NULL, ?, NULL, ?, 0, 'iMessage')
+    VALUES (1, 2, '', 'original-poll-guid', NULL, NULL, ?, ?, NULL, ?, 1, 'iMessage')
     """,
-    voteBlob,
+    testPollBundleID,
+    pollBlob,
     TestDatabase.appleEpoch(now)
   )
+  try db.run(
+    """
+    INSERT INTO message(
+      ROWID, handle_id, text, guid, associated_message_guid, associated_message_type,
+      balloon_bundle_id, payload_data, message_summary_info, date, is_from_me, service
+    )
+    VALUES (2, 1, '', 'vote-row-guid', 'p/original-poll-guid', 4000, NULL, ?, NULL, ?, 0, 'iMessage')
+    """,
+    voteBlob,
+    TestDatabase.appleEpoch(now.addingTimeInterval(1))
+  )
   try db.run("INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, 1)")
+  try db.run("INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, 2)")
 
   let store = try MessageStore(connection: db, path: ":memory:")
   let messages = try store.messages(chatID: 1, limit: 10)
@@ -414,7 +472,84 @@ func messageStoreDecodesPollVoteRowsWithPayloadGate() throws {
   #expect(voteMessage.poll?.originalGUID == "original-poll-guid")
   #expect(voteMessage.poll?.creator == nil)
   #expect(voteMessage.poll?.vote?.participant == "+15550002000")
+  #expect(voteMessage.poll?.vote?.optionID == "choice-a")
+  #expect(voteMessage.poll?.vote?.optionText == "A")
   #expect(streamedVote.poll?.kind == .vote)
+  #expect(streamedVote.poll?.vote?.optionText == "A")
+}
+
+@Test
+func messageStoreResolvesVoteOptionTextFromPollUpdateRows() throws {
+  let db = try Connection(.inMemory)
+  var options = MessageDatabaseFixture.SchemaOptions()
+  options.includeReactionColumns = true
+  options.includeBalloonBundleID = true
+  options.includePayloadData = true
+  options.includeMessageSummaryInfo = true
+  try MessageDatabaseFixture.createSchema(db, options: options)
+
+  try db.run(
+    """
+    INSERT INTO chat(ROWID, chat_identifier, guid, display_name, service_name)
+    VALUES (1, '+15550001000', 'iMessage;+;chat-test', 'Poll Test', 'iMessage')
+    """
+  )
+  try db.run(
+    "INSERT INTO handle(ROWID, id) VALUES (1, '+15550002000'), (2, '+15550001000')")
+
+  let update: [String: Any] = [
+    "orderedPollOptions": [
+      ["optionIdentifier": "choice-a", "pollOptionText": "A"],
+      ["optionIdentifier": "choice-custom", "pollOptionText": "Custom choice"],
+    ]
+  ]
+  let updateBlob = Blob(bytes: [UInt8](try applePollEnvelopePayload(jsonObject: update)))
+  let vote: [String: Any] = [
+    "votes": [
+      ["voteOptionIdentifier": "choice-custom"]
+    ]
+  ]
+  let voteBlob = Blob(bytes: [UInt8](try applePollEnvelopePayload(jsonObject: vote)))
+  let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+  try db.run(
+    """
+    INSERT INTO message(
+      ROWID, handle_id, text, guid, associated_message_guid, associated_message_type,
+      balloon_bundle_id, payload_data, message_summary_info, date, is_from_me, service
+    )
+    VALUES (1, 1, '', 'updated-poll-guid', 'p/original-poll-guid', 2, ?, ?, NULL, ?, 0, 'iMessage')
+    """,
+    testPollBundleID,
+    updateBlob,
+    TestDatabase.appleEpoch(now)
+  )
+  try db.run(
+    """
+    INSERT INTO message(
+      ROWID, handle_id, text, guid, associated_message_guid, associated_message_type,
+      balloon_bundle_id, payload_data, message_summary_info, date, is_from_me, service
+    )
+    VALUES (2, 1, '', 'vote-row-guid', 'p/updated-poll-guid', 4000, NULL, ?, NULL, ?, 0, 'iMessage')
+    """,
+    voteBlob,
+    TestDatabase.appleEpoch(now.addingTimeInterval(1))
+  )
+  try db.run("INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, 1)")
+  try db.run("INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, 2)")
+
+  let store = try MessageStore(connection: db, path: ":memory:")
+  let messages = try store.messagesAfter(afterRowID: 0, chatID: 1, limit: 10)
+  let updateMessage = try #require(messages.first { $0.guid == "updated-poll-guid" })
+  let voteMessage = try #require(messages.first { $0.guid == "vote-row-guid" })
+
+  #expect(updateMessage.poll?.kind == .created)
+  #expect(updateMessage.poll?.originalGUID == "original-poll-guid")
+  #expect(updateMessage.poll?.options?.map(\.text) == ["A", "Custom choice"])
+  #expect(voteMessage.poll?.kind == .vote)
+  #expect(voteMessage.poll?.originalGUID == "updated-poll-guid")
+  #expect(voteMessage.poll?.vote?.optionID == "choice-custom")
+  #expect(voteMessage.poll?.vote?.optionText == "Custom choice")
 }
 
 @Test

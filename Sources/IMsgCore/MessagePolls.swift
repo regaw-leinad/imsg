@@ -18,17 +18,20 @@ public struct MessagePollOption: Codable, Sendable, Equatable {
 
 public struct MessagePollVote: Codable, Sendable, Equatable {
   public let optionID: String
+  public let optionText: String?
   public let participant: String?
   public let eventType: String?
   public let serverTime: String?
 
   public init(
     optionID: String,
+    optionText: String? = nil,
     participant: String? = nil,
     eventType: String? = nil,
     serverTime: String? = nil
   ) {
     self.optionID = optionID
+    self.optionText = optionText
     self.participant = participant
     self.eventType = eventType
     self.serverTime = serverTime
@@ -36,6 +39,7 @@ public struct MessagePollVote: Codable, Sendable, Equatable {
 
   enum CodingKeys: String, CodingKey {
     case optionID = "option_id"
+    case optionText = "option_text"
     case participant
     case eventType = "event_type"
     case serverTime = "server_time"
@@ -142,6 +146,7 @@ public struct MessagePollEvent: Codable, Sendable, Equatable {
 
 public enum MessagePollDecoder {
   public static let pollsBundleIdentifier = "com.apple.messages.Polls"
+  static let updateAssociatedMessageType = 2
   static let voteAssociatedMessageType = 4000
 
   public static func isPollsBalloonBundleID(_ value: String) -> Bool {
@@ -218,11 +223,14 @@ public enum MessagePollDecoder {
       let creator = facts.creator ?? senderHandle
       var creationParticipants = participantHandles
       if let creator { creationParticipants.append(creator) }
+      let updateOriginalGUID =
+        associatedMessageType == updateAssociatedMessageType ? originalGUID : nil
       return MessagePollEvent(
         kind: .created,
         pollGUID: firstNonEmpty(facts.pollGUID, messageGUID),
         question: facts.question,
         options: facts.options,
+        originalGUID: updateOriginalGUID,
         creator: creator,
         participants: sortedUnique(creationParticipants),
         metadata: metadata
@@ -259,6 +267,45 @@ public enum MessagePollDecoder {
       .filter { !$0.isEmpty }
     guard !filtered.isEmpty else { return nil }
     return Array(Set(filtered)).sorted()
+  }
+}
+
+extension MessagePollVote {
+  func resolvingOptionText(_ optionText: String?) -> MessagePollVote {
+    guard self.optionText == nil, let optionText, !optionText.isEmpty else {
+      return self
+    }
+    return MessagePollVote(
+      optionID: optionID,
+      optionText: optionText,
+      participant: participant,
+      eventType: eventType,
+      serverTime: serverTime
+    )
+  }
+}
+
+extension MessagePollEvent {
+  func resolvingVoteOptionTexts(_ optionTextsByID: [String: String]) -> MessagePollEvent {
+    guard kind == .vote, !optionTextsByID.isEmpty else { return self }
+    let resolvedVote = vote.map { vote in
+      vote.resolvingOptionText(optionTextsByID[vote.optionID])
+    }
+    let resolvedVotes = votes?.map { vote in
+      vote.resolvingOptionText(optionTextsByID[vote.optionID])
+    }
+    return MessagePollEvent(
+      kind: kind,
+      pollGUID: pollGUID,
+      question: question,
+      options: options,
+      vote: resolvedVote,
+      votes: resolvedVotes,
+      originalGUID: originalGUID,
+      creator: creator,
+      participants: participants,
+      metadata: metadata
+    )
   }
 }
 
