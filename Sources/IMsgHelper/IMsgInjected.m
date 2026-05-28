@@ -2655,8 +2655,7 @@ static NSDictionary *handleSendPoll(NSInteger requestId, NSDictionary *params) {
     NSString *sessionIdentifier = nil;
     NSArray<NSString *> *optionIdentifiers = nil;
     NSString *payloadError = nil;
-    NSString *payloadQuestion = selectedMessageGuid.length ? @"" : question;
-    NSData *payloadData = buildPollCreationPayloadData(payloadQuestion,
+    NSData *payloadData = buildPollCreationPayloadData(question,
                                                        options,
                                                        creatorHandle,
                                                        &sessionIdentifier,
