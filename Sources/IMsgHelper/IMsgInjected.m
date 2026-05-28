@@ -2531,10 +2531,12 @@ static NSDictionary *handleSendMessage(NSInteger requestId, NSDictionary *params
         : nil;
 
     NSRange zeroRange = NSMakeRange(0, body.length);
+    long long associatedType = selectedMessageGuid.length ? 100 : 0;
 
     // Reply targets need a derived thread identifier on macOS 26 to render
     // as a threaded in-line reply rather than a standalone message.
-    // Best-effort: if we can't derive the parent, send as a normal message.
+    // Best-effort: if we can't derive the parent, retain the older associated-message
+    // fallback so receivers can still render a quoted reply.
     id parentMessage = nil;
     id parentItem = nil;
     NSString *threadIdentifier = nil;
@@ -2553,8 +2555,8 @@ static NSDictionary *handleSendMessage(NSInteger requestId, NSDictionary *params
                                       effectId,
                                       threadIdentifier,
                                       parentItem,
-                                      nil,
-                                      0,
+                                      selectedMessageGuid,
+                                      associatedType,
                                       zeroRange,
                                       /*summaryInfo*/ nil,
                                       /*fileTransferGuids*/ @[],
@@ -2787,6 +2789,7 @@ static NSDictionary *handleSendMultipart(NSInteger requestId, NSDictionary *para
     NSAttributedString *subjectAttr = subject.length
         ? buildPlainAttributed(subject, 0)
         : nil;
+    long long associatedType = selectedMessageGuid.length ? 100 : 0;
 
     @try {
         id parentMessage = nil;
@@ -2803,7 +2806,7 @@ static NSDictionary *handleSendMultipart(NSInteger requestId, NSDictionary *para
         }
         id imMessage = buildIMMessage(body, subjectAttr, effectId, threadIdentifier,
                                       parentItem,
-                                      nil, 0,
+                                      selectedMessageGuid, associatedType,
                                       NSMakeRange(0, body.length),
                                       nil, @[], NO, NO);
         if (!imMessage) {
@@ -3096,6 +3099,7 @@ static NSDictionary *handleSendAttachment(NSInteger requestId, NSDictionary *par
         NSAttributedString *subjectAttr = subject.length
             ? buildPlainAttributed(subject, 0)
             : nil;
+        long long associatedType = selectedMessageGuid.length ? 100 : 0;
         id parentMessage = nil;
         id parentItem = nil;
         NSString *threadIdentifier = nil;
@@ -3111,7 +3115,7 @@ static NSDictionary *handleSendAttachment(NSInteger requestId, NSDictionary *par
 
         id imMessage = buildIMMessage(body, subjectAttr, effectId, threadIdentifier,
                                       parentItem,
-                                      nil, 0,
+                                      selectedMessageGuid, associatedType,
                                       NSMakeRange(0, body.length), nil,
                                       @[transferGuid], isAudio, NO);
         if (!imMessage) {

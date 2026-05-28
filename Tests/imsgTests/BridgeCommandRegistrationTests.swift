@@ -85,6 +85,25 @@ func bridgeAttachmentStagingUsesChatGuid() throws {
 }
 
 @Test
+func bridgeReplySendsKeepAssociatedMessageFallback() throws {
+  let testFile = URL(fileURLWithPath: #filePath)
+  let repoRoot =
+    testFile
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+  let helper = repoRoot.appendingPathComponent("Sources/IMsgHelper/IMsgInjected.m")
+  let source = stripObjectiveCComments(try String(contentsOf: helper, encoding: .utf8))
+
+  for function in ["handleSendMessage", "handleSendMultipart", "handleSendAttachment"] {
+    let body = try #require(functionBody(named: function, in: source))
+    #expect(body.contains("selectedMessageGuid.length ? 100 : 0"))
+    #expect(body.contains("selectedMessageGuid"))
+    #expect(body.contains("associatedType"))
+  }
+}
+
+@Test
 func injectedHelperWiresNativePollSend() throws {
   let testFile = URL(fileURLWithPath: #filePath)
   let repoRoot =

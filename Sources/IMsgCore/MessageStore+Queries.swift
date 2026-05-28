@@ -101,7 +101,7 @@ struct LatestSentMessageQuery {
   let selection: MessageRowSelection
   let fallbackChatID: Int64?
 
-  init(store: MessageStore, text: String, chatID: ChatID?, since date: Date, limit: Int = 50) {
+  init(store: MessageStore, text: String, chatID: ChatID?, since date: Date) {
     self.selection = MessageRowSelection(store: store, includeChatID: true)
     let bodyColumn = store.schema.hasAttributedBody ? "m.attributedBody" : "NULL"
     var sql = """
@@ -121,8 +121,7 @@ struct LatestSentMessageQuery {
       sql += " AND cmj.chat_id = ?"
       bindings.append(chatID.rawValue)
     }
-    sql += " ORDER BY m.date DESC, m.ROWID DESC LIMIT ?"
-    bindings.append(limit)
+    sql += " ORDER BY m.date DESC, m.ROWID DESC"
 
     self.sql = sql
     self.bindings = bindings

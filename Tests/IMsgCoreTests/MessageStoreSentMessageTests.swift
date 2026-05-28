@@ -153,6 +153,45 @@ func latestSentMessagePrefersNewestDecodedAttributedBodyMatch() throws {
 }
 
 @Test
+func latestSentMessageScansPastNewerAttributedBodyNonmatches() throws {
+  let db = try makeSentMessageDatabase()
+  let now = Date()
+  let text = "target body"
+  try insertSentMessageFixture(
+    db,
+    rowID: 10,
+    chatID: 1,
+    text: "",
+    attributedBody: attributedBodyFixture(text),
+    guid: "target-guid",
+    date: now,
+    isFromMe: true
+  )
+  for offset in 1...55 {
+    try insertSentMessageFixture(
+      db,
+      rowID: Int64(10 + offset),
+      chatID: 1,
+      text: "",
+      attributedBody: attributedBodyFixture("other body \(offset)"),
+      guid: "other-guid-\(offset)",
+      date: now.addingTimeInterval(TimeInterval(offset)),
+      isFromMe: true
+    )
+  }
+  let store = try MessageStore(connection: db, path: ":memory:")
+
+  let message = try store.latestSentMessage(
+    matchingText: text,
+    chatID: 1,
+    since: now.addingTimeInterval(-1)
+  )
+
+  #expect(message?.rowID == 10)
+  #expect(message?.guid == "target-guid")
+}
+
+@Test
 func latestSentMessageMatchesDecodedAttributedBodyText() throws {
   let db = try makeSentMessageDatabase()
   let now = Date()
