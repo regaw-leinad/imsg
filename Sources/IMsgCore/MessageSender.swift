@@ -74,6 +74,7 @@ public struct MessageSender {
         "Sending requires Messages.app automation and is only supported on macOS.")
     #else
       var resolved = options
+      let requestedService = resolved.service
       let chatTarget = resolveChatTarget(&resolved)
       let useChat = !chatTarget.isEmpty
       if useChat == false {
@@ -88,8 +89,11 @@ public struct MessageSender {
 
       let smsFallbackEligible =
         resolved.allowSMSFallback
+        && requestedService == .auto
         && useChat == false
         && resolved.service == .imessage
+        && resolved.attachmentPath.isEmpty
+        && !resolved.text.isEmpty
         && recipientIsPhoneNumber(resolved.recipient)
 
       try sendViaAppleScript(

@@ -27,7 +27,7 @@ enum SendCommand {
         flags: [
           .make(
             label: "noSMSFallback", names: [.long("no-sms-fallback")],
-            help: "disable automatic iMessage->SMS fallback for phone recipients")
+            help: "disable automatic iMessage->SMS fallback for text-only auto phone sends")
         ]
       )
     ),
@@ -60,8 +60,6 @@ enum SendCommand {
       (try? store.preferredService(forHandle: handle)) ?? .unknown
     }
   ) async throws {
-    let dbPath = values.option("db") ?? MessageStore.defaultPath
-    let store = try storeFactory(dbPath)
     let region = values.option("region") ?? "US"
     let rawRecipient = values.option("to") ?? ""
     let rawInput = ChatTargetInput(
@@ -82,6 +80,7 @@ enum SendCommand {
     } else {
       recipient = rawRecipient
     }
+
     let input = ChatTargetInput(
       recipient: recipient,
       chatID: rawInput.chatID,
@@ -98,6 +97,9 @@ enum SendCommand {
     guard let service = MessageService(rawValue: serviceRaw) else {
       throw IMsgError.invalidService(serviceRaw)
     }
+
+    let dbPath = values.option("db") ?? MessageStore.defaultPath
+    let store = try storeFactory(dbPath)
 
     let resolvedTarget = try await ChatTargetResolver.resolveChatTarget(
       input: input,
@@ -116,13 +118,19 @@ enum SendCommand {
     if service == .auto && !input.hasChatTarget && !input.recipient.isEmpty {
       switch resolveService(store, input.recipient) {
       case .imessage, .unknown:
-        effectiveService = .imessage
+        effectiveService = .auto
       case .sms:
         effectiveService = .sms
       }
     }
 
-    let allowSMSFallback = !values.flag("noSMSFallback")
+    let allowSMSFallback =
+      service == .auto
+      && !input.hasChatTarget
+      && !input.recipient.isEmpty
+      && !text.isEmpty
+      && file.isEmpty
+      && !values.flag("noSMSFallback")
 
     let options = MessageSendOptions(
       recipient: input.recipient,

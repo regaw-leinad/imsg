@@ -282,6 +282,7 @@ func sendCommandResolvesUniqueContactName() async throws {
       runtime: runtime,
       sendMessage: { options in captured = options },
       resolveSentMessage: { _, _, _, _ in nil },
+      storeFactory: { _ in try CommandTestDatabase.makeStoreForRPC() },
       contactResolverFactory: { _ in resolver }
     )
   }
@@ -334,7 +335,8 @@ func sendCommandRunsWithStubSender() async throws {
       sendMessage: { options in
         captured = options
       },
-      resolveSentMessage: { _, _, _, _ in nil }
+      resolveSentMessage: { _, _, _, _ in nil },
+      storeFactory: { _ in try CommandTestDatabase.makeStoreForRPC() }
     )
   }
   #expect(captured?.recipient == "+15551234567")
@@ -453,6 +455,7 @@ func sendCommandAutoResolvesToSMSWhenDetected() async throws {
       runtime: runtime,
       sendMessage: { options in captured = options },
       resolveSentMessage: { _, _, _, _ in nil },
+      storeFactory: { _ in try CommandTestDatabase.makeStoreForRPC() },
       resolveService: { _, _ in .sms }
     )
   }
@@ -474,10 +477,11 @@ func sendCommandAutoResolvesUnknownToIMessage() async throws {
       runtime: runtime,
       sendMessage: { options in captured = options },
       resolveSentMessage: { _, _, _, _ in nil },
+      storeFactory: { _ in try CommandTestDatabase.makeStoreForRPC() },
       resolveService: { _, _ in .unknown }
     )
   }
-  #expect(captured?.service == .imessage)
+  #expect(captured?.service == .auto)
   #expect(captured?.allowSMSFallback == true)
 }
 
@@ -496,9 +500,33 @@ func sendCommandHonorsNoSMSFallbackFlag() async throws {
       runtime: runtime,
       sendMessage: { options in captured = options },
       resolveSentMessage: { _, _, _, _ in nil },
+      storeFactory: { _ in try CommandTestDatabase.makeStoreForRPC() },
       resolveService: { _, _ in .imessage }
     )
   }
+  #expect(captured?.allowSMSFallback == false)
+}
+
+@Test
+func sendCommandDisablesSMSFallbackForAttachments() async throws {
+  let values = ParsedValues(
+    positional: [],
+    options: ["to": ["+15551234567"], "text": ["hi"], "file": ["/tmp/photo.jpg"]],
+    flags: []
+  )
+  let runtime = RuntimeOptions(parsedValues: values)
+  var captured: MessageSendOptions?
+  _ = try await StdoutCapture.capture {
+    try await SendCommand.run(
+      values: values,
+      runtime: runtime,
+      sendMessage: { options in captured = options },
+      resolveSentMessage: { _, _, _, _ in nil },
+      storeFactory: { _ in try CommandTestDatabase.makeStoreForRPC() },
+      resolveService: { _, _ in .imessage }
+    )
+  }
+  #expect(captured?.service == .auto)
   #expect(captured?.allowSMSFallback == false)
 }
 
@@ -518,6 +546,7 @@ func sendCommandExplicitServiceSkipsDetection() async throws {
       runtime: runtime,
       sendMessage: { options in captured = options },
       resolveSentMessage: { _, _, _, _ in nil },
+      storeFactory: { _ in try CommandTestDatabase.makeStoreForRPC() },
       resolveService: { _, _ in
         resolverCalled = true
         return .sms
@@ -525,6 +554,7 @@ func sendCommandExplicitServiceSkipsDetection() async throws {
     )
   }
   #expect(captured?.service == .imessage)
+  #expect(captured?.allowSMSFallback == false)
   #expect(resolverCalled == false)
 }
 

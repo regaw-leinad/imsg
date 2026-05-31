@@ -26,13 +26,30 @@ import Testing
     let options = MessageSendOptions(
       recipient: "+15551234567",
       text: "hi",
-      service: .imessage,
-      allowSMSFallback: true
+      service: .auto
     )
 
     try sender.send(options)
 
     #expect(spy.services == ["imessage", "sms"])
+  }
+
+  @Test
+  func smsFallbackDoesNotOverrideExplicitIMessage() throws {
+    let spy = RunnerSpy()
+    spy.failOnFirst = true
+    let sender = MessageSender(runner: spy.run)
+    let options = MessageSendOptions(
+      recipient: "+15551234567",
+      text: "hi",
+      service: .imessage,
+      allowSMSFallback: true
+    )
+
+    #expect(throws: IMsgError.self) {
+      try sender.send(options)
+    }
+    #expect(spy.services == ["imessage"])
   }
 
   @Test
@@ -43,7 +60,7 @@ import Testing
     let options = MessageSendOptions(
       recipient: "+15551234567",
       text: "hi",
-      service: .imessage,
+      service: .auto,
       allowSMSFallback: false
     )
 
@@ -81,6 +98,34 @@ import Testing
       text: "hi",
       service: .imessage,
       chatGUID: "iMessage;+;chat123",
+      allowSMSFallback: true
+    )
+
+    #expect(throws: IMsgError.self) {
+      try sender.send(options)
+    }
+    #expect(spy.services == ["imessage"])
+  }
+
+  @Test
+  func smsFallbackDoesNotEngageForAttachmentSend() throws {
+    let spy = RunnerSpy()
+    spy.failOnFirst = true
+    let sender = MessageSender(
+      runner: spy.run,
+      attachmentsSubdirectoryProvider: {
+        FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+      }
+    )
+    let attachment = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString)
+    try Data("photo".utf8).write(to: attachment)
+    defer { try? FileManager.default.removeItem(at: attachment) }
+    let options = MessageSendOptions(
+      recipient: "+15551234567",
+      text: "hi",
+      attachmentPath: attachment.path,
+      service: .auto,
       allowSMSFallback: true
     )
 

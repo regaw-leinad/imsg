@@ -215,18 +215,36 @@ extension RPCServer {
     if input.hasChatTarget && resolvedTarget.preferredIdentifier == nil {
       throw RPCError.invalidParams("missing chat identifier or guid")
     }
+    var effectiveService = service
+    if service == .auto && !input.hasChatTarget && !input.recipient.isEmpty {
+      switch (try? store.preferredService(forHandle: input.recipient)) ?? .unknown {
+      case .imessage, .unknown:
+        effectiveService = .auto
+      case .sms:
+        effectiveService = .sms
+      }
+    }
+
     let directChatInfo =
       input.hasChatTarget
-      ? nil : try resolveDirectChatInfo(recipient: input.recipient, service: service)
+      ? nil : try resolveDirectChatInfo(recipient: input.recipient, service: effectiveService)
+
+    let allowSMSFallback =
+      service == .auto
+      && !input.hasChatTarget
+      && !input.recipient.isEmpty
+      && !text.isEmpty
+      && file.isEmpty
 
     let options = MessageSendOptions(
       recipient: input.recipient,
       text: text,
       attachmentPath: file,
-      service: service,
+      service: effectiveService,
       region: region,
       chatIdentifier: resolvedTarget.chatIdentifier,
-      chatGUID: resolvedTarget.chatGUID
+      chatGUID: resolvedTarget.chatGUID,
+      allowSMSFallback: allowSMSFallback
     )
     let sentAt = Date()
 
