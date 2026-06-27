@@ -318,8 +318,10 @@ extension MessageStore {
       resolvedText = transcription
     }
 
+    // For outgoing messages the joined handle (`h.id`) is the recipient, not the
+    // local account, so prefer `destination_caller_id` whenever it is available.
     var resolvedSender = sender
-    if resolvedSender.isEmpty && !destinationCallerID.isEmpty {
+    if (isFromMe || resolvedSender.isEmpty) && !destinationCallerID.isEmpty {
       resolvedSender = destinationCallerID
     }
 
